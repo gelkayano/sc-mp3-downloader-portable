@@ -119,5 +119,6 @@ The built executable will appear in `dist\SoundCloud Downloader\`.
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — track downloading
 - [ffmpeg](https://ffmpeg.org) — MP3 conversion
+- [aria2c](https://github.com/aria2/aria2/releases/tag/release-1.37.0)
 - [customtkinter](https://github.com/TomSchimansky/CustomTkinter) — UI
 - [Pillow](https://python-pillow.org) — icon generation
