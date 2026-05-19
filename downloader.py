@@ -50,13 +50,16 @@ class Downloader:
             self.progress(1.0)
             self.log("✅ Download complete, converting...")
 
-    def download(self, url):
-        """Запуск скачивания в отдельном потоке"""
+    def download(self, url, playlist=False):
+        """Запуск скачивания в отдельном потоке.
+        playlist=True — скачать весь плейлист/сет целиком.
+        """
         if self._is_running:
             self.log("⚠ Already downloading...")
             return
 
         self._cancel_flag = False
+        self._playlist_mode = playlist
         thread = threading.Thread(target=self._download_thread, args=(url,), daemon=True)
         thread.start()
 
@@ -82,23 +85,38 @@ class Downloader:
             'postprocessors': POSTPROCESSORS,
         }
 
+        # В режиме плейлиста разрешаем скачать все треки сета
+        if getattr(self, '_playlist_mode', False):
+            opts.pop('no_playlist', None)
+            opts['yes_playlist'] = True
+            self.log("📋 Playlist mode: downloading all tracks in set")
+        else:
+            opts['no_playlist'] = True
+
         self.log(f"🔗 URL: {url}")
         self.log("🔍 Fetching track info...")
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                title = info.get('title', 'Unknown')
-                artist = info.get('uploader', 'Unknown')
-                duration = info.get('duration', 0)
+                playlist_mode = getattr(self, '_playlist_mode', False)
 
-                minutes = int(duration // 60)
-                seconds = int(duration % 60)
+                if playlist_mode and info.get('_type') == 'playlist':
+                    entries = info.get('entries') or []
+                    count = len(list(entries))
+                    title = info.get('title', 'Unknown playlist')
+                    self.log(f"📋 Playlist: {title}")
+                    self.log(f"🎵 Tracks: {count}")
+                else:
+                    title = info.get('title', 'Unknown')
+                    artist = info.get('uploader', 'Unknown')
+                    duration = info.get('duration', 0)
+                    minutes = int(duration // 60)
+                    seconds = int(duration % 60)
+                    self.log(f"🎵 {artist} — {title}")
+                    self.log(f"⏱ Duration: {minutes}:{seconds:02d}")
 
-                self.log(f"🎵 {artist} — {title}")
-                self.log(f"⏱ Duration: {minutes}:{seconds:02d}")
                 self.log("⬇ Starting download...")
-
                 ydl.download([url])
 
             self.log("✅ Done!")

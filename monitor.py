@@ -1,7 +1,6 @@
 import os
 import time
 import threading
-import config as _cfg
 from datetime import datetime, timedelta
 from config import (
     DOWNLOADS_PATH,
@@ -9,8 +8,8 @@ from config import (
     ARCHIVE_FILE,
     FFMPEG_PATH,
     YTDLP_OPTIONS as YTDLP_OPTIONS,
-    MONITOR_DATE_AFTER,
     POSTPROCESSORS,
+    get_monitor_settings,
 )
 from utils import ensure_downloads_folder
 
@@ -63,6 +62,14 @@ class Monitor:
             url = url[:-7]
         if url.endswith('/'):
             url = url[:-1]
+
+        # Валидация: должна быть ссылка на SoundCloud
+        import re
+        pattern = r'^https?://(www\.)?(soundcloud\.com|on\.soundcloud\.com|m\.soundcloud\.com)/.+'
+        if not re.match(pattern, url):
+            self.log(f"⚠ Invalid URL — must be a SoundCloud artist link")
+            return False
+
         artists = self.get_artists()
         if url in artists:
             self.log(f"⚠ Already in list: {url}")
@@ -81,10 +88,14 @@ class Monitor:
             return True
         return False
 
-    def check_all(self):
+    def check_all(self, days_back=None, max_tracks=None):
         if self._is_running:
             self.log("⚠ Monitor is already running...")
             return
+        # Читаем из явного хранилища если не переданы напрямую
+        settings = get_monitor_settings()
+        self._run_days_back = days_back if days_back is not None else settings["days_back"]
+        self._run_max_tracks = max_tracks if max_tracks is not None else settings["max_tracks"]
         self._stop_flag = False
         thread = threading.Thread(target=self._check_all_thread, daemon=True)
         thread.start()
@@ -135,9 +146,9 @@ class Monitor:
         error_count = 0
         total_new_tracks = 0
 
-        # Используем настройку из GUI если задана (читаем динамически)
-        days_back = getattr(_cfg, '_MONITOR_DAYS_BACK', 7)
-        max_tracks = getattr(_cfg, 'MONITOR_MAX_TRACKS', 15)
+        # Используем параметры, переданные в check_all()
+        days_back = getattr(self, '_run_days_back', 7)
+        max_tracks = getattr(self, '_run_max_tracks', 15)
         cutoff_date = datetime.now() - timedelta(days=days_back)
         cutoff_str = cutoff_date.strftime("%Y%m%d")
 

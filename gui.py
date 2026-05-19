@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import config
 import tkinter as tk
 import customtkinter as ctk
@@ -12,9 +13,11 @@ from config import (
     ARTISTS_FILE,
     OAUTH_FILE,
     MONITOR_MAX_TRACKS,
+    GEOMETRY_FILE,
     load_oauth_token,
     save_oauth_token,
     is_valid_token,
+    set_monitor_settings,
 )
 
 
@@ -38,6 +41,10 @@ class App(ctk.CTk):
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
         if os.path.exists(icon_path):
             self.iconbitmap(icon_path)
+
+        # Восстановить геометрию из прошлого запуска
+        self._restore_geometry()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # ============================================
         # ОТСЛЕЖИВАНИЕ БУФЕРА ОБМЕНА
@@ -74,19 +81,12 @@ class App(ctk.CTk):
         self._style_tabs()
 
         # ============================================
-        # МОДУЛИ — создаём до построения вкладок,
-        # т.к. _build_monitor_tab → _refresh_artists → self.monitor
+        # МОДУЛИ — создаём с колбэками сразу.
+        # Колбэки используют self.after() — безопасно до создания виджетов,
+        # т.к. реально вызовутся только после запуска mainloop().
+        # _build_monitor_tab → _refresh_artists читает self.monitor.get_artists()
+        # (не логирует), поэтому log_callback не нужен до построения вкладки.
         # ============================================
-        self.downloader = Downloader()
-        self.monitor = Monitor()
-
-        self._build_download_tab()
-        self._build_monitor_tab()
-        self._build_settings_tab()
-
-        self._setup_log_tags(self.download_log)
-        self._setup_log_tags(self.monitor_log)
-
         self.downloader = Downloader(
             log_callback=lambda text: self.after(0, self._smart_log, self.download_log, text),
             progress_callback=lambda val: self.after(0, self._update_download_progress, val),
@@ -97,6 +97,13 @@ class App(ctk.CTk):
             progress_callback=lambda val: self.after(0, self._update_monitor_progress, val),
             done_callback=lambda ok: self.after(0, self._on_monitor_done, ok),
         )
+
+        self._build_download_tab()
+        self._build_monitor_tab()
+        self._build_settings_tab()
+
+        self._setup_log_tags(self.download_log)
+        self._setup_log_tags(self.monitor_log)
 
         self._setup_global_clipboard()
         self._start_clipboard_watcher()
@@ -111,6 +118,43 @@ class App(ctk.CTk):
             )
         except Exception:
             pass
+
+    # ============================================
+    # ГЕОМЕТРИЯ — сохранение / восстановление
+    # ============================================
+    def _restore_geometry(self):
+        try:
+            with open(GEOMETRY_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            geom = data.get("geometry", "")
+            if geom:
+                self.geometry(geom)
+                # Убедиться что окно в пределах экрана
+                self.update_idletasks()
+                sw = self.winfo_screenwidth()
+                sh = self.winfo_screenheight()
+                x = self.winfo_x()
+                y = self.winfo_y()
+                w = self.winfo_width()
+                h = self.winfo_height()
+                nx = max(0, min(x, sw - 100))
+                ny = max(0, min(y, sh - 100))
+                if nx != x or ny != y:
+                    self.geometry(f"{w}x{h}+{nx}+{ny}")
+        except Exception:
+            pass  # файла нет или повреждён — используем дефолт
+
+    def _save_geometry(self):
+        try:
+            geom = self.geometry()
+            with open(GEOMETRY_FILE, 'w', encoding='utf-8') as f:
+                json.dump({"geometry": geom}, f)
+        except Exception:
+            pass
+
+    def _on_close(self):
+        self._save_geometry()
+        self.destroy()
 
     # ============================================
     # АВТОВСТАВКА ИЗ БУФЕРА ОБМЕНА
@@ -339,6 +383,7 @@ class App(ctk.CTk):
             return
         if text.startswith("─") or text.startswith("──"):
             self._log_separator(textbox)
+            self._trim_log(textbox)
             return
 
         # Прогресс скачивания — обновляем текущую строку
@@ -353,6 +398,7 @@ class App(ctk.CTk):
             widget.insert("end", "    ⚙  ", "info")
             widget.insert("end", f"{content}\n", "info")
             widget.see("end")
+            self._trim_log(textbox)
             return
 
         if "🔗" in text:
@@ -361,9 +407,11 @@ class App(ctk.CTk):
         # Заголовки
         if "MONITOR REPORT" in text or "REPORT" in text:
             self._log_header(textbox, "📊 MONITOR REPORT")
+            self._trim_log(textbox)
             return
         if "SoundCloud Monitor" in text:
             self._log_header(textbox, "🔍 SOUNDCLOUD MONITOR")
+            self._trim_log(textbox)
             return
 
         stripped = text.strip()
@@ -378,12 +426,14 @@ class App(ctk.CTk):
             widget.insert("end", "👤 ", "icon_new")
             widget.insert("end", f"{rest}\n", "artist")
             self._log_separator(textbox, "·", 56)
+            self._trim_log(textbox)
             return
 
         # Метаданные трека (дата, длительность)
         if stripped.startswith("📅") or stripped.startswith("⏱"):
             widget.insert("end", "       ", "normal")
             widget.insert("end", f"{stripped}\n", "meta")
+            self._trim_log(textbox)
             return
 
         # Пустая строка
@@ -402,6 +452,7 @@ class App(ctk.CTk):
                 else:
                     widget.insert("end", f"    {text}\n", text_tag)
                 widget.see("end")
+                self._trim_log(textbox)
                 return
 
         widget.insert("end", f"  {text}\n", "normal")
@@ -579,6 +630,24 @@ class App(ctk.CTk):
             command=lambda: self._clear_log(self.download_log),
         ).pack(side="right")
 
+        # Чекбокс: скачать весь плейлист/сет
+        playlist_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        playlist_frame.pack(fill="x", padx=14, pady=(0, 4))
+
+        self._playlist_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            playlist_frame,
+            text="Download full playlist / set",
+            variable=self._playlist_var,
+            font=("Segoe UI", 11),
+            text_color="#888888",
+            fg_color="#ffffff",
+            hover_color="#cccccc",
+            checkmark_color="#000000",
+            border_color="#444444",
+            corner_radius=4,
+        ).pack(side="left")
+
         ctk.CTkFrame(tab, fg_color="#222222", height=2).pack(fill="x", padx=12, pady=(12, 6))
 
         progress_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -614,11 +683,14 @@ class App(ctk.CTk):
             self._smart_log(self.download_log, "⚠ Invalid URL — supported: SoundCloud, YouTube")
             return
 
+        playlist = getattr(self, '_playlist_var', None)
+        playlist_mode = bool(playlist.get()) if playlist else False
+
         self._log_header(self.download_log, "NEW DOWNLOAD")
         self.download_btn.configure(state="disabled", text="⏳ Downloading...")
         self.cancel_btn.configure(state="normal")
         self.download_progress.set(0)
-        self.downloader.download(url)
+        self.downloader.download(url, playlist=playlist_mode)
 
     def _cancel_download(self):
         self.downloader.cancel()
@@ -899,9 +971,10 @@ class App(ctk.CTk):
             self._smart_log(self.monitor_log, "⚠ Invalid values — enter positive integers")
             return
 
+        set_monitor_settings(days_back=days_back, max_tracks=max_tracks)
+        # Обновляем совместимые константы для старых импортов
         config.MONITOR_MAX_TRACKS = max_tracks
         config.MONITOR_DATE_AFTER = f"today-{days_back}days"
-        config._MONITOR_DAYS_BACK = days_back
         self._smart_log(
             self.monitor_log,
             f"✅ Monitor settings applied: max {max_tracks} tracks, last {days_back} days",

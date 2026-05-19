@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from collections import UserDict
 
 
 def get_base_path():
@@ -29,6 +30,29 @@ OAUTH_FILE = os.path.join(BASE_PATH, "oauth.txt")
 
 FFMPEG_PATH = get_resource_path("ffmpeg.exe")
 ARIA2_PATH = get_resource_path("aria2c.exe")
+
+# Файл для сохранения геометрии окна между запусками
+GEOMETRY_FILE = os.path.join(BASE_PATH, "window.json")
+
+
+# ============================================
+# НАСТРОЙКИ МОНИТОРА (явное хранилище, без monkey-patching)
+# ============================================
+_monitor_settings = {
+    "days_back": 7,
+    "max_tracks": 15,
+}
+
+
+def get_monitor_settings():
+    return dict(_monitor_settings)
+
+
+def set_monitor_settings(days_back=None, max_tracks=None):
+    if days_back is not None:
+        _monitor_settings["days_back"] = int(days_back)
+    if max_tracks is not None:
+        _monitor_settings["max_tracks"] = int(max_tracks)
 
 
 # ============================================
@@ -151,57 +175,49 @@ def get_ytdlp_options():
 
 
 # Для обратной совместимости — динамические свойства
-class _LazyOptions(dict):
+class _LazyOptions(UserDict):
     """
-    Ленивый словарь опций yt-dlp.
-    Пересчитывается только при явном вызове invalidate(),
-    а не на каждое обращение к ключу.
+    Ленивый словарь опций yt-dlp на базе UserDict.
+    Пересчитывается только при явном вызове invalidate().
+    UserDict гарантирует полный dict-интерфейс (pop, update,
+    setdefault, __len__, **unpack и т.д.) — все они проходят
+    через self.data, которое обновляется в _ensure_fresh().
     """
     def __init__(self, getter):
+        # Не вызываем super().__init__() чтобы не трогать self.data раньше времени
+        self.data = {}
         self._getter = getter
         self._dirty = True  # первый доступ всегда загружает
 
     def _ensure_fresh(self):
         if self._dirty:
-            super().clear()
-            super().update(self._getter())
+            self.data = self._getter()
             self._dirty = False
 
     def invalidate(self):
         """Пометить кэш устаревшим (вызывать после изменения токена)"""
         self._dirty = True
 
+    # Перехватываем все точки входа UserDict
     def __getitem__(self, key):
         self._ensure_fresh()
-        return super().__getitem__(key)
+        return self.data[key]
 
     def __iter__(self):
         self._ensure_fresh()
-        return super().__iter__()
+        return iter(self.data)
 
-    def items(self):
+    def __len__(self):
         self._ensure_fresh()
-        return super().items()
-
-    def keys(self):
-        self._ensure_fresh()
-        return super().keys()
-
-    def values(self):
-        self._ensure_fresh()
-        return super().values()
-
-    def get(self, key, default=None):
-        self._ensure_fresh()
-        return super().get(key, default)
+        return len(self.data)
 
     def __contains__(self, key):
         self._ensure_fresh()
-        return super().__contains__(key)
+        return key in self.data
 
     def copy(self):
         self._ensure_fresh()
-        return dict(self).copy()
+        return dict(self.data)
 
 
 YTDLP_OPTIONS = _LazyOptions(get_ytdlp_options)
@@ -226,7 +242,7 @@ POSTPROCESSORS = [
 
 
 # ============================================
-# НАСТРОЙКИ МОНИТОРА
+# НАСТРОЙКИ МОНИТОРА (совместимость с импортами)
 # ============================================
 MONITOR_MAX_TRACKS = 15
 MONITOR_DATE_AFTER = "today-7days"
